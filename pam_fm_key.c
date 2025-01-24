@@ -102,23 +102,23 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc,
 	}
 
 	char line[1024];
-	int found = 0;
+	int auth_success = 0;
+	
 	while (fgets(line, sizeof(line), fp)) {
 		char fileUser[256];
 		char fileSerial[36];
 		int keyIndex;
 		char pubKeyHex[130];
+		
 		if (sscanf(line, "%[^:]:%[^:]:%d:%s", fileUser, fileSerial, &keyIndex, pubKeyHex) == 4) {
 			if (strcmp(fileUser, username) == 0) {
 				strncpy(keySerial, fileSerial, sizeof(keySerial)-1);
-				syslog(LOG_INFO, "Found key record for user: %s -> %s, key index: %d", username, keySerial, keyIndex);
-				found = 1;
+				syslog(LOG_INFO, "Trying key record for user: %s -> %s, key index: %d", username, keySerial, keyIndex);
 				
 				// 解析公钥
 				if (strlen(pubKeyHex) < 130) {
-					syslog(LOG_ERR, "Public key format error");
-					fclose(fp);
-					return PAM_AUTH_ERR;
+					syslog(LOG_ERR, "Public key format error for serial %s", keySerial);
+					continue;
 				}
 				
 				// 跳过"04"前缀
@@ -130,74 +130,66 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc,
 				for (int i = 0; i < 32; i++) {
 					sscanf(ptr + i*2, "%02hhX", &pubKey.y[i]);
 				}
-				pubKey.bits = 256; // 设置公钥长度为256位
-				hKey = (FM_HKEY)(keyIndex & 0x7F); // 设置密钥索引，确保最高位为0表示永久存储
-				break;
+				pubKey.bits = 256;
+				hKey = (FM_HKEY)(keyIndex & 0x7F);
+
+				// 尝试打开设备
+				ret = OpenDev((FM_U8*)keySerial);
+				if (ret != FME_OK) {
+					syslog(LOG_INFO, "Failed to open device %s: %03X", keySerial, ret);
+					continue;
+				}
+
+				// 生成随机数
+				ret = FM_SIC_GenRandom(hDev, sizeof(random), random);
+				if (ret != FME_OK) {
+					syslog(LOG_ERR, "Random number generation failed for %s: %03X", keySerial, ret);
+					CloseDev();
+					continue;
+				}
+
+				// 使用设备签名
+				ret = FM_SIC_ECCSign(hDev, FM_ALG_SM2_1, hKey, random, sizeof(random), NULL, &signature);
+				if (ret != FME_OK) {
+					syslog(LOG_ERR, "Signature failed for %s: %03X", keySerial, ret);
+					CloseDev();
+					continue;
+				}
+
+				// 使用公钥验证签名
+				ret = FM_SIC_ECCVerify(hDev, FM_ALG_SM2_1, FM_HKEY_FROM_HOST, &pubKey, random, sizeof(random), &signature);
+				if (ret == FME_OK) {
+					syslog(LOG_INFO, "Authentication successful with device %s", keySerial);
+					CloseDev();
+					auth_success = 1;
+					break;
+				}
+
+				syslog(LOG_ERR, "Signature verification failed for %s: %03X", keySerial, ret);
+				CloseDev();
 			}
 		}
 	}
+	
 	fclose(fp);
-
-	if (!found) {
-		syslog(LOG_ERR, "No key record found for user %s", username);
-		return PAM_AUTH_ERR;
-	}
-	// 3. 打开设备
-	ret = OpenDev((FM_U8*)keySerial);
-	if (ret != FME_OK) {
-		syslog(LOG_ERR, "Failed to open device: %03X", ret);
-		return PAM_AUTH_ERR;
-	}
-	syslog(LOG_INFO, "Device opened successfully");
-
-	// 4. 生成随机数
-	ret = FM_SIC_GenRandom(hDev, sizeof(random), random);
-	if (ret != FME_OK) {
-		syslog(LOG_ERR, "Random number generation failed: %03X", ret);
-		CloseDev();
-		return PAM_AUTH_ERR;
-	}
-	syslog(LOG_INFO, "Random number generation successful");
-
-	// 5. 使用设备签名
-	ret = FM_SIC_ECCSign(hDev, FM_ALG_SM2_1, hKey, random, sizeof(random), NULL, &signature);
-	if (ret != FME_OK) {
-		syslog(LOG_ERR, "Signature failed: %03X", ret);
-		CloseDev();
-		return PAM_AUTH_ERR;
-	}
-	syslog(LOG_INFO, "Signature successfully");
-
-	// 6. 使用公钥验证签名
-	ret = FM_SIC_ECCVerify(hDev, FM_ALG_SM2_1, hKey, NULL, random, sizeof(random), &signature);
-	if (ret != FME_OK) {
-		syslog(LOG_ERR, "Signature verification failed: %03X", ret);
-		CloseDev();
-		return PAM_AUTH_ERR;
-	}
-	syslog(LOG_INFO, "Signature verification successful");
-
-	CloseDev();
-	return PAM_SUCCESS;
+	return auth_success ? PAM_SUCCESS : PAM_AUTH_ERR;
 }
 
 int OpenDev(FM_U8 *keySerial) {
 	FM_U32 u32Ret = FME_OK;
 	u32Ret = FM_SIC_OpenBySerial(keySerial, 0, 0, &hDev);
 	if (u32Ret != FME_OK) {
-		printf("\nOpen Device FAIL:%03X!\n", u32Ret);
+		syslog(LOG_ERR,"\nOpen Device FAIL:%03X!\n", u32Ret);
 		return u32Ret;
 	}
-	printf("\nOpen Device OK!\n");
 	return FME_OK;
 }
 int CloseDev() {
 	FM_U32 u32Ret = FM_SIC_CloseDevice(hDev);
 	if (u32Ret != FME_OK) {
-		printf("\nClose Device FAIL:%03X\n", u32Ret);
+		syslog(LOG_ERR,"\nClose Device FAIL:%03X\n", u32Ret);
 		return u32Ret;
 	}
-	printf("\nClose Device OK\n");
 	return FME_OK;
 }
 
