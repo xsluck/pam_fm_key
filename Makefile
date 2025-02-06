@@ -10,5 +10,8 @@ clean:
 install:
 	chmod 644 pam_fm_key.so
 	cp -f pam_fm_key.so  /usr/lib/x86_64-linux-gnu/security/
+	cp -f libUSBKEYapi.so /usr/lib/
+	cp -f libkeyjni.so /usr/lib/
 	cp -f fm_key_test /usr/bin/
 	cp -f pam_test /usr/bin/
+	

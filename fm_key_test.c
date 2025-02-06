@@ -449,27 +449,23 @@ int signVerifyTest(const FM_U8 *data, FM_U32 dataLen, FM_U8 *signature, FM_U32 *
 	memcpy(signature + 32, eccSignature.s, 32);
 	*signLen = 64; // SM2签名固定为64字节(r和s各32字节)
 
-	// char pubKeyHex[130] = "044F0EDCB86065C59A587F3569F7510E79C926AF6C2D1C4AD5148E5CEFD0A78BCD2314B932D82D565CB807016EE9B37A99D2B0609697703C6B4372996B8C29EB0D";
-	// char *ptr = pubKeyHex + 2;
-	// for (int i = 0; i < 32; i++)
-	// {
-	// 	sscanf(ptr + i * 2, "%02hhX", &publicKey.x[i]);
-	// }
-	// ptr += 64;
-	// for (int i = 0; i < 32; i++)
-	// {
-	// 	sscanf(ptr + i * 2, "%02hhX", &publicKey.y[i]);
-	// }
-	// publicKey.bits = 256; // 设置公钥长度为256位
+	// 导出公钥
+	ret = exportPublicKey(hKey, &publicKey);
+	if (ret != FME_OK)
+	{
+		printf("exportPublicKey FAIL:%03X\n", ret);
+		return ret;
+	}
 
-	ret = FM_SIC_ECCVerify(hDev, FM_ALG_SM2_1, hKey, NULL, (FM_U8 *)data, dataLen, &eccSignature);
-	// ret = FM_SIC_ECCVerify(hDev, FM_ALG_SM2_1, FM_HKEY_FROM_HOST, &publicKey, (FM_U8 *)data, dataLen, &eccSignature);
+
+	// ret = FM_SIC_ECCVerify(hDev, FM_ALG_SM2_1, hKey, NULL, (FM_U8 *)data, dataLen, &eccSignature);
+	ret = FM_SIC_ECCVerify(hDev, FM_ALG_SM2_1, FM_HKEY_FROM_HOST, &publicKey, (FM_U8 *)data, dataLen, &eccSignature);
 	if (ret != FME_OK)
 	{
 		printf("ECCVerify FAIL:%03X\n", ret);
 		return ret;
 	}
-
+	printf("ECCVerify OK\n");
 	return FME_OK;
 }
 int RunTest()
@@ -566,7 +562,6 @@ int RunTest()
 cleanup:
 	printf("\n[清理] 执行清理操作\n");
 	DevUserLogout();
-	CloseDev();
 	return ret;
 }
 int AddUserKey()
@@ -661,6 +656,20 @@ int AddUserKey()
 		CloseDev();
 		return u32Ret;
 	}
+	// 签名验签测试
+	printf("\n[步骤5] 签名验签测试\n");
+	unsigned char testData[] = "Test Data For Signature";
+	unsigned char signature[64] = {0};
+	FM_U32 signLen = sizeof(signature);
+	u32Ret = signVerifyTest(testData, sizeof(testData), signature, &signLen, hkey);
+	if (u32Ret != FME_OK)
+	{
+		printf("签名验签测试失败\n");
+		DevUserLogout();
+		CloseDev();
+		return u32Ret;
+	}
+	
 
 	// 读取现有文件内容
 	FILE *fp = fopen("/etc/pam.d/upk.key", "r");
